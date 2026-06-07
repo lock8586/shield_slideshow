@@ -1,0 +1,47 @@
+# ── Secrets / credentials — NEVER commit ──────────────────────────────
+auth.xml
+tokens.json
+get_token.py
+device_code.json
+fresh_access_token.txt
+config*.xml
+nas_pw.txt
+album_snippet.txt
+*token*.json
+*token*.txt
+
+# ── Android build artifacts ───────────────────────────────────────────
+photos-screensaver/build/
+photos-screensaver/.gradle/
+photos-screensaver/app/build/
+**/build/
+**/.gradle/
+*.apk
+*.ap_
+*.dex
+local.properties
+
+# ── Generated data / logs ─────────────────────────────────────────────
+*_log.txt
+extract_log.txt
+*_report.txt
+dupes_to_remove.txt
+genmanifest.log
+manifest.txt
+
+# ── Scratch screenshots / scratch images (repo root only) ─────────────
+/ss*.png
+/menu*.png
+/named.png
+/home.png
+/setup.png
+/wk.png
+/*.tmp
+
+# ── OS cruft ──────────────────────────────────────────────────────────
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Obsolete early test script — contains a private album share link
+test_album.py
