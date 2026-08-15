@@ -129,8 +129,11 @@ class SetupActivity : Activity() {
 
     private val accent = Color.parseColor("#4CAF50")
 
-    private fun showReady(url: String, photoCount: Int = -1) {
+    // Which control to focus after showReady renders: the Start button (first entry),
+    // the selected style, or the selected speed (so the remote stays put after a change).
+    private fun showReady(url: String, photoCount: Int = -1, focus: String = "start") {
         val layout = root()
+        val prefs = getSharedPreferences("config", Context.MODE_PRIVATE)
 
         // ── Header ──────────────────────────────────────────────────────────────
         layout.addView(TextView(this).apply {
@@ -150,43 +153,107 @@ class SetupActivity : Activity() {
             text = "Streaming from  $url\nTurn on at: Settings → Device Preferences → Screen Saver → Welps Picture Slideshow"
             textSize = 14f
             setTextColor(Color.parseColor("#7A7A7A"))
-            setPadding(0, 0, 0, 36)
+            setPadding(0, 0, 0, 24)
             setLineSpacing(8f, 1f)
         })
 
+        // ── Start now ───────────────────────────────────────────────────────────
+        val startButton = pillButton("▶  Start screensaver now", filled = true) {
+            startActivity(android.content.Intent(this, PreviewActivity::class.java))
+        }
+        layout.addView(startButton)
+        layout.addView(View(this).apply { minimumHeight = 36 })
+
+        var focusTarget: View? = if (focus == "start") startButton else null
+
         // ── Slideshow style ─────────────────────────────────────────────────────
-        layout.addView(TextView(this).apply {
-            text = "SLIDESHOW STYLE"
-            textSize = 14f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(Color.parseColor("#888888"))
-            letterSpacing = 0.12f
-            setPadding(0, 0, 0, 18)
-        })
-        val current = Theme.from(
-            getSharedPreferences("config", Context.MODE_PRIVATE).getString("theme", null)
-        )
-        var focusTarget: View? = null
+        layout.addView(sectionLabel("SLIDESHOW STYLE"))
+        val currentTheme = Theme.from(prefs.getString("theme", null))
         for (t in Theme.values()) {
-            val selected = t == current
+            val selected = t == currentTheme
             val card = themeCard(t, selected) {
-                getSharedPreferences("config", Context.MODE_PRIVATE)
-                    .edit().putString("theme", t.key).apply()
-                showReady(url, photoCount)
+                prefs.edit().putString("theme", t.key).apply()
+                showReady(url, photoCount, focus = "style")
             }
-            if (selected) focusTarget = card
+            if (selected && focus == "style") focusTarget = card
             layout.addView(card)
         }
+
+        // ── Slideshow speed ──────────────────────────────────────────────────────
+        layout.addView(View(this).apply { minimumHeight = 16 })
+        layout.addView(sectionLabel("SLIDESHOW SPEED"))
+        val currentSpeed = SlideshowSpeed.from(prefs.getInt("interval_secs", -1))
+        val speedRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        for (s in SlideshowSpeed.values()) {
+            val selected = s == currentSpeed
+            val pill = speedPill(s, selected) {
+                prefs.edit().putInt("interval_secs", s.seconds).apply()
+                showReady(url, photoCount, focus = "speed")
+            }
+            if (selected && focus == "speed") focusTarget = pill
+            speedRow.addView(pill)
+        }
+        layout.addView(speedRow)
+        layout.addView(TextView(this).apply {
+            text = currentSpeed.desc
+            textSize = 14f
+            setTextColor(Color.parseColor("#9A9A9A"))
+            setPadding(4, 14, 0, 0)
+        })
 
         // ── Footer ──────────────────────────────────────────────────────────────
         layout.addView(View(this).apply { minimumHeight = 28 })
         layout.addView(pillButton("Change NAS URL", filled = false) {
-            getSharedPreferences("config", Context.MODE_PRIVATE).edit().remove("nas_url").apply()
+            prefs.edit().remove("nas_url").apply()
             showSetup()
         })
 
-        // Keep the remote focused on the selected style after a re-render.
+        // Keep the remote focused on the relevant control after a re-render.
         focusTarget?.let { layout.post { it.requestFocus() } }
+    }
+
+    private fun sectionLabel(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 14f
+        setTypeface(typeface, Typeface.BOLD)
+        setTextColor(Color.parseColor("#888888"))
+        letterSpacing = 0.12f
+        setPadding(0, 0, 0, 18)
+    }
+
+    private fun speedPill(s: SlideshowSpeed, selected: Boolean, onClick: () -> Unit): View {
+        val baseStroke = if (selected) accent else Color.parseColor("#2E2E30")
+        return TextView(this).apply {
+            text = s.label
+            textSize = 17f
+            gravity = Gravity.CENTER
+            isFocusable = true
+            isClickable = true
+            setTextColor(if (selected) Color.WHITE else Color.parseColor("#BBBBBB"))
+            setPadding(40, 22, 40, 22)
+            background = GradientDrawable().apply {
+                cornerRadius = 24f
+                setColor(if (selected) Color.parseColor("#15311C") else Color.parseColor("#1B1B1D"))
+                setStroke(if (selected) 4 else 2, baseStroke)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+            ).apply { marginEnd = 18 }
+            setOnClickListener { onClick() }
+            setOnFocusChangeListener { v, has ->
+                (v.background as GradientDrawable).setStroke(
+                    if (has) 5 else (if (selected) 4 else 2),
+                    if (has) Color.WHITE else baseStroke
+                )
+                v.animate().scaleX(if (has) 1.04f else 1f).scaleY(if (has) 1.04f else 1f)
+                    .setDuration(120).start()
+            }
+        }
     }
 
     private fun descFor(t: Theme): String = when (t) {

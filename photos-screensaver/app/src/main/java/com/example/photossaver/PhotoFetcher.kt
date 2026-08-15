@@ -27,8 +27,8 @@ class PhotoFetcher(private val context: Context) {
      * The date enables anniversary themes; when absent we derive year/month from the
      * YYYY/MM folder path so age/month themes still work.
      */
-    fun fetchManifest(baseUrl: String): List<PhotoEntry> {
-        val text = httpGetText("${base(baseUrl)}manifest.txt") ?: return emptyList()
+    fun fetchManifest(baseUrl: String, file: String = "manifest.txt"): List<PhotoEntry> {
+        val text = httpGetText("${base(baseUrl)}$file") ?: return emptyList()
         return text.lineSequence()
             .map { it.trim() }
             .filter { it.isNotEmpty() && !it.startsWith("#") }

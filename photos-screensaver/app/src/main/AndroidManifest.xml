@@ -25,6 +25,14 @@
             </intent-filter>
         </activity>
 
+        <!-- exported so the slideshow can also be launched directly via ADB:
+             adb shell am start -n com.example.photossaver/.PreviewActivity -->
+        <activity
+            android:name=".PreviewActivity"
+            android:exported="true"
+            android:theme="@style/AppTheme"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden" />
+
         <service
             android:name=".PhotoDreamService"
             android:exported="true"

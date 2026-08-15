@@ -17,7 +17,10 @@ enum class Theme(
     val wRecent: Int = 0,
     val wMid: Int = 0,
     val wOld: Int = 0,
-    val windowDays: Int = 0
+    val windowDays: Int = 0,
+    // People themes draw from their own pre-filtered list instead of the full library.
+    // null = use the default manifest.txt (every photo).
+    val manifestFile: String? = null
 ) {
     RECENT_MIX("recent_mix", "Recent Mix",
         "Mostly recent, with a steady sprinkle of older memories",
@@ -30,7 +33,10 @@ enum class Theme(
         ThemeMode.DATE, windowDays = 0),
     THIS_WEEK("this_week", "This Week",
         "Photos from around today's date — across all years",
-        ThemeMode.DATE, windowDays = 3);
+        ThemeMode.DATE, windowDays = 3),
+    ME_ELLEN("me_ellen", "Me & Ellen",
+        "Only photos with both you and Ellen in them",
+        ThemeMode.WEIGHTED, 50, 25, 25, manifestFile = "manifest_me_ellen.txt");
 
     companion object {
         fun from(key: String?): Theme = values().firstOrNull { it.key == key } ?: RECENT_MIX

@@ -28,6 +28,9 @@ extract_log.txt
 dupes_to_remove.txt
 genmanifest.log
 manifest.txt
+gen_me_ellen.log
+manifest_me_ellen.txt
+me_ellen_test.png
 
 # ── Scratch screenshots / scratch images (repo root only) ─────────────
 /ss*.png
