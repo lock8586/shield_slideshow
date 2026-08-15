@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-# Generate manifest.txt for the screensaver: one line per image, "relpath|YYYYMMDD".
+# Generate manifest.txt for the screensaver: one line per image,
+# "relpath|YYYYMMDD|videorelpath" (videorelpath is empty when there isn't one).
 # Date = EXIF DateTimeOriginal (JPEG + HEIC) -> date in filename -> YYYY/MM folder (day 00).
+# The video field flags iPhone Live Photos: <name>.HEIC/.JPG + <name>.MOV/.MP4 sharing
+# the exact same basename in the same folder -- the screensaver plays that clip once,
+# muted, then crossfades into this same still. Added 2026-08-15 alongside
+# add_photos.py's identical same-basename pairing fallback (see that script's docstring
+# for how this pattern was discovered).
 import os, struct, re
 
 LIB = "/volume1/homes/welps/Photos"
 IMG_EXT = {'.jpg', '.jpeg', '.png', '.heic', '.gif'}
+VIDEO_EXT = {'.mp4', '.mov'}
 
 def _parse_tiff(data, tiff):
     bo = data[tiff:tiff+2]
@@ -78,19 +85,31 @@ def path_ymd(rel):
     return (y, mo, 0)
 
 out = []
+paired = 0
 for root, _, files in os.walk(LIB):
     if '@eaDir' in root:
         continue
+    # index this folder's videos by basename once, so the pairing check below is a
+    # dict lookup, not a re-scan of `files` per image
+    videos_here = {}
+    for fn in files:
+        if os.path.splitext(fn)[1].lower() in VIDEO_EXT:
+            videos_here.setdefault(os.path.splitext(fn)[0], fn)
     for fn in files:
         if os.path.splitext(fn)[1].lower() not in IMG_EXT:
             continue
         p = os.path.join(root, fn)
         rel = os.path.relpath(p, LIB).replace('\\', '/')
         y, mo, d = exif_ymd(p) or filename_ymd(fn) or path_ymd(rel)
-        out.append(f"{rel}|{y:04d}{mo:02d}{d:02d}")
+        video_fn = videos_here.get(os.path.splitext(fn)[0], '')
+        video_rel = ''
+        if video_fn:
+            video_rel = os.path.relpath(os.path.join(root, video_fn), LIB).replace('\\', '/')
+            paired += 1
+        out.append(f"{rel}|{y:04d}{mo:02d}{d:02d}|{video_rel}")
 
 tmp = os.path.join(LIB, "manifest.txt.tmp")
 with open(tmp, 'w') as f:
     f.write("\n".join(out) + "\n")
 os.replace(tmp, os.path.join(LIB, "manifest.txt"))
-print(f"manifest: {len(out)} photos")
+print(f"manifest: {len(out)} photos ({paired} with a paired Live Photo video)")

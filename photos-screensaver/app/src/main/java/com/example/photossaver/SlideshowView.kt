@@ -8,6 +8,7 @@ import android.graphics.Matrix
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.location.Geocoder
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -18,6 +19,12 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.exifinterface.media.ExifInterface
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -38,6 +45,8 @@ class SlideshowView(context: Context) : FrameLayout(context) {
     private var executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var imageView: ImageView
+    private lateinit var playerView: PlayerView
+    private var player: ExoPlayer? = null
     private lateinit var timeText: TextView
     private lateinit var dateText: TextView
     private lateinit var weatherText: TextView
@@ -54,7 +63,7 @@ class SlideshowView(context: Context) : FrameLayout(context) {
     private val bOld = mutableListOf<PhotoEntry>()     // older or undated
     private val datePool = mutableListOf<PhotoEntry>() // matches today's date (anniversary themes)
     private val recentlyShown = ArrayDeque<String>()  // avoid near-term repeats
-    private var nextUp: String? = null                // pre-picked & prefetched next photo
+    private var nextUp: PhotoEntry? = null            // pre-picked & prefetched next photo
     private val timeFmt = SimpleDateFormat("h:mm a", Locale.getDefault())
     private val dateFmt = SimpleDateFormat("EEEE, MMMM d", Locale.getDefault())
 
@@ -86,7 +95,19 @@ class SlideshowView(context: Context) : FrameLayout(context) {
         fetcher = PhotoFetcher(context)
         startClock()
         fetchWeather()
+        loadManifest()
+    }
 
+    /**
+     * Fetches the photo list and, on any failure, retries on a capped backoff instead of
+     * getting permanently stuck on an error message. The NAS's photo server is a single
+     * unattended Python process with no supervisor (see gen_manifest.py / data-pipeline.md)
+     * -- a transient blip is expected to happen occasionally, and previously required
+     * manually restarting the screensaver to recover from since start() only ever tried
+     * once. Found 2026-08-15: heavy concurrent SSH/curl traffic against the NAS during
+     * testing was enough to trigger exactly this.
+     */
+    private fun loadManifest(attempt: Int = 0) {
         val manifestFile = theme.manifestFile ?: "manifest.txt"
         executor.execute {
             // Pull the photo list (people themes have their own pre-filtered manifest),
@@ -95,11 +116,17 @@ class SlideshowView(context: Context) : FrameLayout(context) {
             if (entries.isNotEmpty()) {
                 bucketize(entries)
                 handler.post { showNext() }
-            } else if (theme.manifestFile != null) {
-                handler.post { showMessage("No photos yet for “${theme.label}”.\nThe list is still being built on the NAS.") }
-            } else {
-                handler.post { showMessage("Can't reach the photo server") }
+                return@execute
             }
+            val retryDelay = minOf(5_000L * (attempt + 1), 60_000L)  // 5s, 10s, 15s... capped at 1 min
+            handler.post {
+                if (theme.manifestFile != null) {
+                    showMessage("No photos yet for “${theme.label}”.\nThe list is still being built on the NAS.")
+                } else {
+                    showMessage("Can't reach the photo server\nRetrying…")
+                }
+            }
+            handler.postDelayed({ if (started) loadManifest(attempt + 1) }, retryDelay)
         }
     }
 
@@ -107,6 +134,8 @@ class SlideshowView(context: Context) : FrameLayout(context) {
         started = false
         handler.removeCallbacksAndMessages(null)
         executor.shutdownNow()
+        player?.release()
+        player = null
     }
 
     private fun bucketize(entries: List<PhotoEntry>) {
@@ -148,14 +177,14 @@ class SlideshowView(context: Context) : FrameLayout(context) {
         return weighted.first().first
     }
 
-    private fun pickNext(): String? {
+    private fun pickNext(): PhotoEntry? {
         val pool = poolForPick()
         if (pool.isEmpty()) return null
         repeat(8) {
             val cand = pool.random()
-            if (!recentlyShown.contains(cand.path)) return cand.path
+            if (!recentlyShown.contains(cand.path)) return cand
         }
-        return pool.random().path
+        return pool.random()
     }
 
     // ── Layout ────────────────────────────────────────────────────────────────
@@ -171,6 +200,23 @@ class SlideshowView(context: Context) : FrameLayout(context) {
             )
         }
         frame.addView(imageView)
+
+        // Live Photo video layer, stacked directly above imageView (below the clock/
+        // location text and loading overlay added further down). Invisible/transparent
+        // at rest; playLivePhoto() cross-fades it in over the still, plays the clip once,
+        // then cross-fades back out to reveal the still underneath. See PhotoFetcher's
+        // PhotoEntry.videoPath and gen_manifest.py for where the pairing comes from.
+        playerView = PlayerView(context).apply {
+            useController = false
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            alpha = 0f
+            visibility = View.INVISIBLE
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        frame.addView(playerView)
 
         // Gradient scrim at bottom
         val scrim = View(context).apply {
@@ -322,28 +368,122 @@ class SlideshowView(context: Context) : FrameLayout(context) {
     // ── Slideshow ─────────────────────────────────────────────────────────────
 
     private fun showNext() {
-        val relPath = nextUp ?: pickNext() ?: run { showMessage("No photos found"); return }
+        val entry = nextUp ?: pickNext() ?: run { showMessage("No photos found"); return }
         nextUp = pickNext()   // decide the upcoming photo now so we can prefetch it
-        recentlyShown.addLast(relPath)
+        recentlyShown.addLast(entry.path)
         while (recentlyShown.size > 60) recentlyShown.removeFirst()
 
         executor.execute {
-            val file = fetcher.getPhoto(nasBase, relPath)
+            val file = fetcher.getPhoto(nasBase, entry.path)
             val bmp = file?.let { decodeOriented(it) }
+            val videoFile = entry.videoPath?.let { fetcher.getVideo(nasBase, it) }
             handler.post {
-                if (bmp != null) {
-                    fadeOutLoading()
-                    imageView.setImageBitmap(bmp)
-                    imageView.alpha = 0f
-                    imageView.animate().alpha(1f).setDuration(1500).start()
-                    showExifLocation(file)
+                if (bmp == null) {
+                    // Retry quickly past a failed photo rather than stalling on the dwell timer.
+                    handler.postDelayed({ showNext() }, 800L)
+                    return@post
                 }
-                // Move on after the configured dwell on success; retry quickly past a failed photo.
-                handler.postDelayed({ showNext() }, if (bmp != null) dwellMs else 800L)
+                fadeOutLoading()
+                if (videoFile != null) {
+                    // playLivePhoto schedules the next showNext() itself, once the video has
+                    // played through and the crossfade to the still has landed -- the dwell
+                    // clock starts from there, not from when playback began.
+                    playLivePhoto(videoFile, bmp, file)
+                } else {
+                    showStill(bmp, file)
+                    handler.postDelayed({ showNext() }, dwellMs)
+                }
             }
-            // Warm the cache for the next photo so its transition is instant.
-            nextUp?.let { fetcher.getPhoto(nasBase, it) }
+            // Warm the cache for the next photo (and its video, if it has one) so its
+            // transition is instant.
+            nextUp?.let { n ->
+                fetcher.getPhoto(nasBase, n.path)
+                n.videoPath?.let { fetcher.getVideo(nasBase, it) }
+            }
         }
+    }
+
+    private fun showStill(bmp: Bitmap, file: File) {
+        imageView.setImageBitmap(bmp)
+        imageView.alpha = 0f
+        imageView.animate().alpha(1f).setDuration(1500).start()
+        showExifLocation(file)
+    }
+
+    private fun ensurePlayer(): ExoPlayer {
+        var p = player
+        if (p == null) {
+            p = ExoPlayer.Builder(context).build().apply { volume = 0f }  // muted: screensaver, not a video player
+            playerView.player = p
+            player = p
+        }
+        return p
+    }
+
+    /**
+     * Plays a Live Photo's video component once (muted), crossfading it in over whatever's
+     * currently showing -- same as a normal photo arriving. When the clip ends (or errors,
+     * or stalls unreasonably long), swaps imageView to the paired still WHILE IT'S STILL
+     * HIDDEN beneath the opaque video layer (so the swap itself is invisible), then
+     * crossfades the video layer away to reveal it -- landing seamlessly on the still
+     * instead of a hard cut. Always ends by scheduling the next showNext(), even on failure.
+     */
+    private fun playLivePhoto(videoFile: File, stillBmp: Bitmap, stillFile: File) {
+        val p = ensurePlayer()
+        var settled = false
+        lateinit var watchdog: Runnable
+        lateinit var listener: Player.Listener
+
+        // Runs exactly once per play (guarded by `settled`), however we got here: the
+        // clip finished normally, errored, or the watchdog gave up on it. Always removes
+        // this call's own listener first -- p is a long-lived, reused player, so a
+        // listener left attached would keep firing (and re-entering settle) for every
+        // photo shown after this one.
+        fun settle() {
+            if (settled) return
+            settled = true
+            handler.removeCallbacks(watchdog)
+            p.removeListener(listener)
+            imageView.setImageBitmap(stillBmp)
+            imageView.alpha = 1f
+            showExifLocation(stillFile)
+            if (playerView.alpha > 0f) {
+                playerView.animate().alpha(0f).setDuration(600).withEndAction {
+                    p.stop()
+                    playerView.visibility = View.INVISIBLE
+                    handler.postDelayed({ showNext() }, dwellMs)
+                }.start()
+            } else {
+                p.stop()
+                playerView.visibility = View.INVISIBLE
+                handler.postDelayed({ showNext() }, dwellMs)
+            }
+        }
+
+        watchdog = Runnable { settle() }
+        listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED) settle()
+            }
+            override fun onPlayerError(error: PlaybackException) {
+                settle()   // fall back to the still, same as any other failed load
+            }
+        }
+        p.addListener(listener)
+
+        p.setMediaItem(MediaItem.fromUri(Uri.fromFile(videoFile)))
+        p.repeatMode = Player.REPEAT_MODE_OFF
+        p.prepare()
+        p.playWhenReady = true
+
+        playerView.visibility = View.VISIBLE
+        playerView.alpha = 0f
+        playerView.animate().alpha(1f).setDuration(1500).start()
+
+        // Live Photo clips are only a few seconds -- if something wedges (codec issue,
+        // stalled fetch, whatever), don't strand the slideshow waiting for STATE_ENDED
+        // that may never come.
+        handler.postDelayed(watchdog, 15_000L)
     }
 
     private fun fadeOutLoading() {

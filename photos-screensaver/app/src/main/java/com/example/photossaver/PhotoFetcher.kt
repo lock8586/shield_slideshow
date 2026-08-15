@@ -23,9 +23,11 @@ class PhotoFetcher(private val context: Context) {
     private fun base(baseUrl: String) = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
 
     /**
-     * Fetch the photo list. Each manifest line is either `relpath` or `relpath|YYYYMMDD`.
-     * The date enables anniversary themes; when absent we derive year/month from the
-     * YYYY/MM folder path so age/month themes still work.
+     * Fetch the photo list. Each manifest line is `relpath`, `relpath|YYYYMMDD`, or
+     * `relpath|YYYYMMDD|videorelpath` (the third field is a same-basename Live Photo
+     * video companion, empty when there isn't one -- see gen_manifest.py). The date
+     * enables anniversary themes; when absent we derive year/month from the YYYY/MM
+     * folder path so age/month themes still work.
      */
     fun fetchManifest(baseUrl: String, file: String = "manifest.txt"): List<PhotoEntry> {
         val text = httpGetText("${base(baseUrl)}$file") ?: return emptyList()
@@ -37,28 +39,36 @@ class PhotoFetcher(private val context: Context) {
     }
 
     private fun parseEntry(line: String): PhotoEntry {
-        val bar = line.indexOf('|')
-        val path = if (bar >= 0) line.substring(0, bar) else line
+        val fields = line.split('|')
+        val path = fields[0]
         var y = 0; var m = 0; var d = 0
-        if (bar >= 0) {
-            val ds = line.substring(bar + 1).trim()
-            if (ds.length == 8 && ds.all { it.isDigit() }) {
-                y = ds.substring(0, 4).toInt(); m = ds.substring(4, 6).toInt(); d = ds.substring(6, 8).toInt()
-            }
+        val ds = fields.getOrNull(1)?.trim()
+        if (ds != null && ds.length == 8 && ds.all { it.isDigit() }) {
+            y = ds.substring(0, 4).toInt(); m = ds.substring(4, 6).toInt(); d = ds.substring(6, 8).toInt()
         }
         if (y == 0) {   // fall back to the folder structure (YYYY/MM/...)
             val parts = path.split('/')
             parts.getOrNull(0)?.toIntOrNull()?.takeIf { it in 1900..2100 }?.let { y = it }
             parts.getOrNull(1)?.toIntOrNull()?.takeIf { it in 1..12 }?.let { m = it }
         }
-        return PhotoEntry(path, y, m, d)
+        val videoPath = fields.getOrNull(2)?.trim()?.takeIf { it.isNotEmpty() }
+        return PhotoEntry(path, y, m, d, videoPath)
     }
 
     /** Download a single photo on demand (or return it from cache). Trims the cache. */
-    fun getPhoto(baseUrl: String, relPath: String): File? {
+    fun getPhoto(baseUrl: String, relPath: String): File? = getFile(baseUrl, relPath, "img")
+
+    /**
+     * Download a Live Photo's paired video on demand (or return it from cache).
+     * ".mp4" extension matters here (unlike getPhoto's plain ".img") -- ExoPlayer's
+     * extractor sniffing is less reliable without one.
+     */
+    fun getVideo(baseUrl: String, relPath: String): File? = getFile(baseUrl, relPath, "mp4")
+
+    private fun getFile(baseUrl: String, relPath: String, ext: String): File? {
         val encoded = relPath.split("/").joinToString("/") { Uri.encode(it) }
         val url = base(baseUrl) + encoded
-        val file = File(cacheDir, "${url.hashCode()}.img")
+        val file = File(cacheDir, "${url.hashCode()}.$ext")
         if (file.exists() && file.length() > 0) {
             file.setLastModified(System.currentTimeMillis())   // mark recently used
             return file
@@ -107,5 +117,15 @@ class PhotoFetcher(private val context: Context) {
     }
 }
 
-/** One photo from the manifest: its relative path and best-known capture date (0 = unknown). */
-data class PhotoEntry(val path: String, val year: Int, val month: Int, val day: Int)
+/**
+ * One photo from the manifest: its relative path, best-known capture date (0 = unknown),
+ * and an optional paired Live Photo video's relative path (same basename, from
+ * gen_manifest.py's pairing scan).
+ */
+data class PhotoEntry(
+    val path: String,
+    val year: Int,
+    val month: Int,
+    val day: Int,
+    val videoPath: String? = null
+)
