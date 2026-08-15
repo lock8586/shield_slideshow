@@ -4,16 +4,23 @@
 
 | Tool | Path |
 |------|------|
-| ADB | `%TEMP%\platform-tools\platform-tools\adb.exe` |
-| Gradle 8.4 | `%TEMP%\gradle-8.4\bin\gradle.bat` |
+| ADB | `C:\android-sdk\platform-tools\adb.exe` |
+| Gradle 8.5 | `C:\Users\jphel\tools\gradle-8.5\bin\gradle.bat` |
 | Android SDK | `C:\android-sdk` |
+| JDK 21 | `C:\Program Files\Eclipse Adoptium\jdk-21.0.11.10-hotspot` |
+
+> Both tools used to live under `%TEMP%` and Windows' temp cleanup **gutted them**
+> (2026-08-14): gradle's `bin/` and `lib/` were emptied, and platform-tools was left
+> with `adb.exe` but no `AdbWinApi.dll`, so adb died with exit 53 and no message.
+> They now live in durable paths. The SDK's own platform-tools was complete all
+> along — prefer it over any temp copy.
 
 ---
 
 ## Connect to the Shield each session
 
 ```powershell
-$adb = "$env:TEMP\platform-tools\platform-tools\adb.exe"
+$adb = "C:\android-sdk\platform-tools\adb.exe"
 & $adb devices
 ```
 
@@ -24,7 +31,14 @@ If the Shield isn't listed, go to **Settings → Device Preferences → Develope
 ```
 
 Re-pairing is not needed — the pairing key from the first session is saved.  
-The Shield's IP has been `192.168.1.8` or `192.168.1.25` — check the TV if it changed.
+The Shield's IP has been `192.168.1.8`, `192.168.1.25`, and (as of 2026-08-14)
+`192.168.1.9` — the current value is shown right on the Developer options screen under
+**Network debugging → Enabled on …**.
+
+If `adb devices` shows the Shield as **`unauthorized`**, the key was revoked (the
+Developer options screen has a "Revoke USB debugging authorizations" button). Nothing
+can be pushed until someone accepts the "Allow debugging from this computer?" dialog
+**on the TV** — it can't be done from here.
 
 ---
 
@@ -32,13 +46,18 @@ The Shield's IP has been `192.168.1.8` or `192.168.1.25` — check the TV if it 
 
 ```powershell
 $env:ANDROID_HOME = "C:\android-sdk"
-$gradle = "$env:TEMP\gradle-8.4\bin\gradle.bat"
+$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-21.0.11.10-hotspot"
+$gradle = "C:\Users\jphel\tools\gradle-8.5\bin\gradle.bat"
 Set-Location "C:\Users\jphel\wifi_debug\photos-screensaver"
 & $gradle assembleDebug
 
-$adb = "$env:TEMP\platform-tools\platform-tools\adb.exe"
+$adb = "C:\android-sdk\platform-tools\adb.exe"
 & $adb install -r "app\build\outputs\apk\debug\app-debug.apk"
 ```
+
+(Gradle 8.5, not the 8.4 in `gradle/wrapper/` — the only JDK on this box is 21, and
+Gradle didn't support 21 until 8.5. There's no `gradlew` script or wrapper jar here,
+so the wrapper can't bootstrap itself; call gradle by path.)
 
 The build takes ~10–30 seconds. `-r` reinstalls without losing settings.
 
