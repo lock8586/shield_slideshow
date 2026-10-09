@@ -19,21 +19,12 @@ $ErrorActionPreference='Stop'
 try { Start-Transcript -Path (Join-Path $PSScriptRoot 'gen_me_ellen.log') -Append -ErrorAction SilentlyContinue | Out-Null } catch {}
 Write-Host ("==== run @ {0} ====" -f (Get-Date))
 $base='http://192.168.1.43:5000/webapi/entry.cgi'
-$pwFile='C:\Users\jphel\OneDrive\Documents\nas_pw.txt'
-
-# --- credentials (handle OneDrive on-demand: retry until the real file lands) ---
-$map=$null
-for ($i=1; $i -le 20 -and -not $map; $i++) {
-  $raw = Get-Content $pwFile -Raw -ErrorAction SilentlyContinue
-  if ($raw -and $raw.Length -gt 8) {
-    $m=@{}; foreach ($l in ($raw -split "`r?`n")) { if ($l -match '^\s*([^:]+):\s*(.*)$') { $m[$Matches[1].Trim().ToLower()]=$Matches[2].Trim() } }
-    $u=$m['username']; if(-not $u){$u=$m['user']}
-    $p=$m['pw']; if(-not $p){$p=$m['pass']}; if(-not $p){$p=$m['password']}
-    if ($u -and $p) { $map=@{u=$u;p=$p} }
-  }
-  if (-not $map) { Start-Sleep -Milliseconds 600 }
-}
-if (-not $map) { throw "Could not read NAS credentials from $pwFile (OneDrive not hydrated - pin the file)." }
+# --- credentials: Windows Credential Manager (the plaintext nas_pw.txt on OneDrive was retired;
+# this script silently failed every night from then until 2026-10-09) ---
+. 'C:\Users\jphel\pw\CredStore.ps1'
+$nasCred = Get-Secret -Name 'nas'
+if (-not $nasCred) { throw "No 'nas' credential in Credential Manager (CredStore.ps1)." }
+$map = @{ u = $nasCred.UserName; p = $nasCred.GetNetworkCredential().Password }
 
 $sid=(Invoke-RestMethod -Method Post -Uri $base -Body @{api='SYNO.API.Auth';version='7';method='login';account=$map.u;passwd=$map.p;format='sid'}).data.sid
 if (-not $sid) { throw "Login failed." }
@@ -87,6 +78,16 @@ try {
 
   Set-Content -Path $Out -Value ($lines -join "`n") -Encoding UTF8 -NoNewline
   Write-Host ("DONE: $($lines.Count) photos with both -> $Out")
+
+  # Synology can't decode newer iPhone HEICs, so face recognition never ran on them (0 of 447
+  # HEICs on the Sep-Oct 2026 trip had a recognized person). Top up from the AI vision captions
+  # that name both Josh and Ellen -- see llm_wiki\scripts\me_ellen_from_captions.py.
+  try {
+    $py = (Get-Command python -ErrorAction SilentlyContinue).Source
+    $topUp = 'C:\Users\jphel\llm_wiki\scripts\me_ellen_from_captions.py'
+    if ($py -and (Test-Path $topUp)) { & $py -I $topUp $Out 2>&1 | ForEach-Object { Write-Host $_ } }
+    else { Write-Host "WARN: caption top-up skipped (python or script missing)" }
+  } catch { Write-Host "WARN: caption top-up failed: $($_.Exception.Message)" }
 
   # Deploy to the NAS so the :8080 server hands it to the Shield.
   if ($Deploy) {
